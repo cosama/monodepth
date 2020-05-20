@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+
+<launch>
+
+  <param name="/use_sim_time" value="true" />
+  <node name="playbag" pkg="rosbag" type="play"
+      args="--clock --rate=$(arg rate) --delay=180 $(arg bag_filename)" />
+
+  <node name="monodepth" pkg="monodepth" type="monodepth.py" output="screen">
+    <param name="topic_color" value="/cv_camera_0/image_raw "/>
+    <param name="topic_depth" value="/cv_camera_0/image_depth"/>
+  </node>
+
+  <node name="rqt_tracker_image" pkg="rqt_image_view" type="rqt_image_view" output="screen"
+    args="topic:=/cv_camera_0/image_depth"/>
+
+</launch>
+
