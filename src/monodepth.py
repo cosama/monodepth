@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import time
 import numpy as np
@@ -11,12 +11,18 @@ import tensorflow as tf
 from sensor_msgs.msg import Image, PointCloud2, PointField
 from cv_bridge import CvBridge, CvBridgeError
 
+import cv_bridge
+print(cv_bridge.__file__)
+
 from predict import predict
 from layers import BilinearUpSampling2D
 
 
 class MonoDepth():
     def __init__(self):
+
+        self.queue = []
+
         # Setup tensorflow session
         self.session = keras.backend.get_session()
         self.init = tf.global_variables_initializer()
@@ -29,6 +35,7 @@ class MonoDepth():
         self.topic_color = rospy.get_param("~topic_color", "/camera/image_raw")
         self.topic_depth = rospy.get_param("~topic_depth", "/camera/image_depth")
         self.topic_pointcloud = rospy.get_param("~topic_pointcloud", "/pointcloud")
+        print("TOPIC", self.topic_color)
 
         self.min_depth = rospy.get_param("~min_depth", 10)
         self.max_depth = rospy.get_param("~max_depth", 1000)
@@ -47,6 +54,8 @@ class MonoDepth():
         self.model = keras.models.load_model(self.model_path, custom_objects=self.custom_objects, compile=False)
         self.model._make_predict_function()
 
+        self.queue.append(np.zeros((640, 480, 3)))
+
         # Publishers
         self.pub_image_depth = rospy.Publisher(self.topic_depth, Image, queue_size=1)
         self.pub_pointcloud = rospy.Publisher(self.topic_pointcloud, PointCloud2, queue_size=1)
@@ -54,6 +63,7 @@ class MonoDepth():
 
         # Subscribers
         self.bridge = CvBridge()
+        print("Start image sub")
         self.sub_image_raw = rospy.Subscriber(self.topic_color, Image, self.image_callback)
 
     # Loss function for the depth map
@@ -134,6 +144,7 @@ class MonoDepth():
     #
     # After processing it publishes back the estimated depth result
     def image_callback(self, data):
+        print("Image callback called")
         # Convert message to opencv image
         try:
             image = self.bridge.imgmsg_to_cv2(data, "bgr8")
@@ -150,36 +161,48 @@ class MonoDepth():
         img = cv2.resize(img, (640, 480))
         arr = np.clip(np.asarray(img, dtype=np.float32) / 255, 0, 1)
 
+        self.queue.append(arr)
+        if len(self.queue) > 100:
+            self.queue.pop()
+
+    def run(self):
         # Predict depth image
         with self.session.as_default():
             with self.session.graph.as_default():
-                result = predict(self.model, arr, self.min_depth, self.max_depth, self.batch_size)
+                while not rospy.is_shutdown():
+                    if self.queue:
+                        result = predict(self.model, self.queue.pop(),
+                                         self.min_depth, self.max_depth,
+                                         self.batch_size)
 
-        # Resize and reshape output
-        depth = result.reshape(result.shape[1], result.shape[2], 1)
+                        # Resize and reshape output
+                        depth = result.reshape(result.shape[1], result.shape[2], 1)
 
-        # Display depth
-        if self.debug:
-            cv2.imshow("Result", depth)
-            cv2.waitKey(1)
+                        print("publish result")
 
-        # Publish depth image
-        depth = 255 * depth
-        self.pub_image_depth.publish(self.bridge.cv2_to_imgmsg(depth.astype(np.uint8), "mono8"))
+                        # Display depth
+                        if self.debug:
+                            cv2.imshow("Result", depth)
+                            cv2.waitKey(1)
 
-        # Generate Point cloud
-        cloud_msg = self.create_pointcloud_msg(depth, image)
-        self.pub_pointcloud.publish(cloud_msg)
+                        # Publish depth image
+                        depth = 255 * depth
+                        self.pub_image_depth.publish(self.bridge.cv2_to_imgmsg(depth.astype(np.uint8), "mono8"))
 
-        # Increment counter
-        self.counter += 1
+                        # Generate Point cloud
+                        # cloud_msg = self.create_pointcloud_msg(depth, image)
+                        # self.pub_pointcloud.publish(cloud_msg)
+
+                        # Increment counter
+                        self.counter += 1
+                    else:
+                        rospy.sleep(0.1)
+
 
 def main():
     rospy.init_node("monodepth")
-
     depth = MonoDepth()
-
-    rospy.spin()
+    depth.run()
 
 if __name__ == "__main__":
     main()
